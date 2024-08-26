@@ -94,7 +94,6 @@ static const int CLIBS = 0;
 
 #define LIB_FAIL	"open"
 
-#define setprogdir(L)		((void)0)
 
 
 /*
@@ -121,8 +120,101 @@ static void *lsys_load (lua_State *L, const char *path, int seeglb);
 */
 static lua_CFunction lsys_sym (lua_State *L, void *lib, const char *sym);
 
+/*
+** {=========================================================================
+** This determines the location of the executable for relative module loading
+** Modified by the LuaDist project for UNIX platforms
+** ==========================================================================
+*/
+#if defined(_WIN32)
+  #include <windows.h>
+  #define _PATH_MAX MAX_PATH
+#else
+  #define _PATH_MAX PATH_MAX
+#endif
 
+#if defined (__CYGWIN__)
+  #include <sys/cygwin.h>
+#endif
 
+#if defined(__linux__) || defined(__sun)
+  #include <unistd.h> /* readlink */
+#endif
+
+#if defined(__APPLE__)
+  #include <sys/param.h>
+  #include <mach-o/dyld.h>
+#endif
+
+#if defined(__FreeBSD__)
+  #include <sys/types.h>
+  #include <sys/sysctl.h>
+#endif
+
+static void setprogdir(lua_State *L) {
+  char progdir[_PATH_MAX + 1];
+  char *lb;
+  int nsize = sizeof(progdir)/sizeof(char);
+  int n = 0;
+#if defined(__CYGWIN__)
+  char win_buff[_PATH_MAX + 1];
+  GetModuleFileNameA(NULL, win_buff, nsize);
+  cygwin_conv_path(CCP_WIN_A_TO_POSIX, win_buff, progdir, nsize);
+  n = strlen(progdir);
+#elif defined(_WIN32)
+  n = GetModuleFileNameA(NULL, progdir, nsize);
+#elif defined(__linux__)
+  n = readlink("/proc/self/exe", progdir, nsize);
+  if (n > 0) progdir[n] = 0;
+#elif defined(__sun)
+  pid_t pid = getpid();
+  char linkname[256];
+  sprintf(linkname, "/proc/%d/path/a.out", pid);
+  n = readlink(linkname, progdir, nsize);
+  if (n > 0) progdir[n] = 0;  
+#elif defined(__FreeBSD__)
+  int mib[4];
+  mib[0] = CTL_KERN;
+  mib[1] = KERN_PROC;
+  mib[2] = KERN_PROC_PATHNAME;
+  mib[3] = -1;
+  size_t cb = nsize;
+  sysctl(mib, 4, progdir, &cb, NULL, 0);
+  n = cb;
+#elif defined(__BSD__)
+  n = readlink("/proc/curproc/file", progdir, nsize);
+  if (n > 0) progdir[n] = 0;
+#elif defined(__APPLE__)
+  uint32_t nsize_apple = nsize;
+  if (_NSGetExecutablePath(progdir, &nsize_apple) == 0)
+    n = strlen(progdir);
+#else
+  // FALLBACK
+  // Use 'lsof' ... should work on most UNIX systems (incl. OSX)
+  // lsof will list open files, this captures the 1st file listed (usually the executable)
+  int pid;
+  FILE* fd;
+  char cmd[80];
+  pid = getpid();
+
+  sprintf(cmd, "lsof -p %d | awk '{if ($5==\"REG\") { print $9 ; exit}}' 2> /dev/null", pid);
+  fd = popen(cmd, "r");
+  n = fread(progdir, 1, nsize, fd);
+  pclose(fd);
+
+  // remove newline
+  if (n > 1) progdir[--n] = '\0';
+#endif
+  if (n == 0 || n == nsize || (lb = strrchr(progdir, (int)LUA_DIRSEP[0])) == NULL)
+    luaL_error(L, "unable to get process executable path");
+  else {
+    *lb = '\0';
+    
+    // Replace the relative path placeholder
+    luaL_gsub(L, lua_tostring(L, -1), LUA_EXEC_DIR, progdir);
+    lua_remove(L, -2);
+  }
+}
 
 #if defined(LUA_USE_DLOPEN)	/* { */
 /*
@@ -177,32 +269,12 @@ static lua_CFunction lsys_sym (lua_State *L, void *lib, const char *sym) {
 ** =======================================================================
 */
 
-#include <windows.h>
-
-#undef setprogdir
-
 /*
 ** optional flags for LoadLibraryEx
 */
 #if !defined(LUA_LLE_FLAGS)
 #define LUA_LLE_FLAGS	0
 #endif
-
-
-static void setprogdir (lua_State *L) {
-  char buff[MAX_PATH + 1];
-  char *lb;
-  DWORD nsize = sizeof(buff)/sizeof(char);
-  DWORD n = GetModuleFileNameA(NULL, buff, nsize);
-  if (n == 0 || n == nsize || (lb = strrchr(buff, '\\')) == NULL)
-    luaL_error(L, "unable to get ModuleFileName");
-  else {
-    *lb = '\0';
-    luaL_gsub(L, lua_tostring(L, -1), LUA_EXEC_DIR, buff);
-    lua_remove(L, -2);  /* remove original string */
-  }
-}
-
 
 static void pusherror (lua_State *L) {
   int error = GetLastError();

@@ -1,5 +1,5 @@
 /*
-** $Id: loslib.c,v 1.65.1.1 2017/04/19 17:29:57 roberto Exp $
+** $Id: loslib.c,v 1.64 2016/04/18 13:06:55 roberto Exp $
 ** Standard Operating System library
 ** See Copyright Notice in lua.h
 */
@@ -30,16 +30,16 @@
 */
 #if !defined(LUA_STRFTIMEOPTIONS)	/* { */
 
-/* options for ANSI C 89 (only 1-char options) */
+/* options for ANSI C 89 */
 #define L_STRFTIMEC89		"aAbBcdHIjmMpSUwWxXyYZ%"
 
 /* options for ISO C 99 and POSIX */
 #define L_STRFTIMEC99 "aAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%" \
-    "||" "EcECExEXEyEY" "OdOeOHOIOmOMOSOuOUOVOwOWOy"  /* two-char options */
+	"||" "EcECExEXEyEY" "OdOeOHOIOmOMOSOuOUOVOwOWOy"
 
 /* options for Windows */
 #define L_STRFTIMEWIN "aAbBcdHIjmMpSUwWxXyYzZ%" \
-    "||" "#c#x#d#H#I#j#m#M#S#U#w#W#y#Y"  /* two-char options */
+	"||" "#c#x#d#H#I#j#m#M#S#U#w#W#y#Y"
 
 #if defined(LUA_USE_WINDOWS)
 #define LUA_STRFTIMEOPTIONS	L_STRFTIMEWIN
@@ -139,6 +139,9 @@ static time_t l_checktime (lua_State *L, int arg) {
 
 
 static int os_execute (lua_State *L) {
+#if defined(WINAPI_FAMILY_PARTITION)
+  return luaL_error(L, "unsupport api in uwp platform");
+#else
   const char *cmd = luaL_optstring(L, 1, NULL);
   int stat = system(cmd);
   if (cmd != NULL)
@@ -147,6 +150,7 @@ static int os_execute (lua_State *L) {
     lua_pushboolean(L, stat);  /* true if there is a shell */
     return 1;
   }
+#endif
 }
 
 
@@ -175,8 +179,12 @@ static int os_tmpname (lua_State *L) {
 
 
 static int os_getenv (lua_State *L) {
+#if defined(WINAPI_FAMILY_PARTITION)
+  return luaL_error(L, "unsupport api in uwp platform");
+#else
   lua_pushstring(L, getenv(luaL_checkstring(L, 1)));  /* if NULL push nil */
   return 1;
+#endif
 }
 
 
@@ -257,13 +265,12 @@ static int getfield (lua_State *L, const char *key, int d, int delta) {
 }
 
 
-static const char *checkoption (lua_State *L, const char *conv,
-                                ptrdiff_t convlen, char *buff) {
-  const char *option = LUA_STRFTIMEOPTIONS;
-  int oplen = 1;  /* length of options being checked */
-  for (; *option != '\0' && oplen <= convlen; option += oplen) {
+static const char *checkoption (lua_State *L, const char *conv, char *buff) {
+  const char *option;
+  int oplen = 1;
+  for (option = LUA_STRFTIMEOPTIONS; *option != '\0'; option += oplen) {
     if (*option == '|')  /* next block? */
-      oplen++;  /* will check options with next length (+1) */
+      oplen++;  /* next length */
     else if (memcmp(conv, option, oplen) == 0) {  /* match? */
       memcpy(buff, conv, oplen);  /* copy valid option to buffer */
       buff[oplen] = '\0';
@@ -281,10 +288,8 @@ static const char *checkoption (lua_State *L, const char *conv,
 
 
 static int os_date (lua_State *L) {
-  size_t slen;
-  const char *s = luaL_optlstring(L, 1, "%c", &slen);
+  const char *s = luaL_optstring(L, 1, "%c");
   time_t t = luaL_opt(L, l_checktime, 2, time(NULL));
-  const char *se = s + slen;  /* 's' end */
   struct tm tmr, *stm;
   if (*s == '!') {  /* UTC? */
     stm = l_gmtime(&t, &tmr);
@@ -293,8 +298,7 @@ static int os_date (lua_State *L) {
   else
     stm = l_localtime(&t, &tmr);
   if (stm == NULL)  /* invalid date? */
-    return luaL_error(L,
-                 "time result cannot be represented in this installation");
+    luaL_error(L, "time result cannot be represented in this installation");
   if (strcmp(s, "*t") == 0) {
     lua_createtable(L, 0, 9);  /* 9 = number of fields */
     setallfields(L, stm);
@@ -304,14 +308,13 @@ static int os_date (lua_State *L) {
     luaL_Buffer b;
     cc[0] = '%';
     luaL_buffinit(L, &b);
-    while (s < se) {
+    while (*s) {
       if (*s != '%')  /* not a conversion specifier? */
         luaL_addchar(&b, *s++);
       else {
         size_t reslen;
         char *buff = luaL_prepbuffsize(&b, SIZETIMEFMT);
-        s++;  /* skip '%' */
-        s = checkoption(L, s, se - s, cc + 1);  /* copy specifier to 'cc' */
+        s = checkoption(L, s + 1, cc + 1);  /* copy specifier to 'cc' */
         reslen = strftime(buff, SIZETIMEFMT, cc, stm);
         luaL_addsize(&b, reslen);
       }
@@ -341,8 +344,7 @@ static int os_time (lua_State *L) {
     setallfields(L, &ts);  /* update fields with normalized values */
   }
   if (t != (time_t)(l_timet)t || t == (time_t)(-1))
-    return luaL_error(L,
-                  "time result cannot be represented in this installation");
+    luaL_error(L, "time result cannot be represented in this installation");
   l_pushtime(L, t);
   return 1;
 }
